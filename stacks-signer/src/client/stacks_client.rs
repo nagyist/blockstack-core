@@ -14,13 +14,11 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 use std::collections::{HashMap, VecDeque};
-use std::fmt::Display;
-use std::time::{Duration, Instant};
 
 use blockstack_lib::chainstate::nakamoto::NakamotoBlock;
 use blockstack_lib::chainstate::stacks::boot::{NakamotoSignerEntry, SIGNERS_NAME};
 use blockstack_lib::chainstate::stacks::db::StacksBlockHeaderTypes;
-use blockstack_lib::chainstate::stacks::TransactionVersion;
+use blockstack_lib::chainstate::stacks::{StacksTransaction, TransactionVersion};
 use blockstack_lib::net::api::callreadonly::CallReadOnlyResponse;
 use blockstack_lib::net::api::get_tenures_fork_info::{
     TenureForkingInfo, RPC_TENURE_FORKING_INFO_PATH,
@@ -304,7 +302,11 @@ impl StacksClient {
     }
 
     /// Submit the block proposal to the stacks node. The block will be validated and returned via the HTTP endpoint for Block events.
-    pub fn submit_block_for_validation(&self, block: NakamotoBlock) -> Result<(), ClientError> {
+    pub fn submit_block_for_validation(
+        &self,
+        block: NakamotoBlock,
+        replay_txs: Option<Vec<StacksTransaction>>,
+    ) -> Result<(), ClientError> {
         debug!("StacksClient: Submitting block for validation";
             "signer_signature_hash" => %block.header.signer_signature_hash(),
             "block_id" => %block.header.block_id(),
@@ -313,7 +315,7 @@ impl StacksClient {
         let block_proposal = NakamotoBlockProposal {
             block,
             chain_id: self.chain_id,
-            replay_txs: None,
+            replay_txs,
         };
         let timer = crate::monitoring::actions::new_rpc_call_timer(
             &self.block_proposal_path(),
@@ -602,36 +604,6 @@ impl StacksClient {
         Ok(account_entry)
     }
 
-    /// Post a block to the stacks-node, retry forever on errors.
-    ///
-    /// In tests, this panics if the retry takes longer than 30 seconds.
-    pub fn post_block_until_ok<F: Display>(&self, log_fmt: &F, block: &NakamotoBlock) -> bool {
-        debug!("StacksClient: Posting block to stacks node";
-            "signer_signature_hash" => %block.header.signer_signature_hash(),
-            "block_id" => %block.header.block_id(),
-            "block_height" => %block.header.chain_length,
-        );
-        let start_time = Instant::now();
-        loop {
-            match self.post_block(block) {
-                Ok(block_push_result) => {
-                    debug!("{log_fmt}: Block pushed to stacks node: {block_push_result:?}");
-                    return block_push_result;
-                }
-                Err(e) => {
-                    if cfg!(any(test, feature = "testing"))
-                        && start_time.elapsed() > Duration::from_secs(30)
-                    {
-                        panic!(
-                            "{log_fmt}: Timed out in test while pushing block to stacks node: {e}"
-                        );
-                    }
-                    warn!("{log_fmt}: Failed to push block to stacks node: {e}. Retrying...");
-                }
-            };
-        }
-    }
-
     /// Try to post a completed nakamoto block to our connected stacks-node
     /// Returns `true` if the block was accepted or `false` if the block
     ///   was rejected.
@@ -644,7 +616,8 @@ impl StacksClient {
         let path = format!("{}{}?broadcast=1", self.http_origin, postblock_v3::PATH);
         let timer = crate::monitoring::actions::new_rpc_call_timer(&path, &self.http_origin);
         let send_request = || {
-            self.stacks_node_client
+            let response = self
+                .stacks_node_client
                 .post(&path)
                 .header("Content-Type", "application/octet-stream")
                 .header(AUTHORIZATION, self.auth_password.clone())
@@ -652,14 +625,21 @@ impl StacksClient {
                 .send()
                 .map_err(|e| {
                     debug!("Failed to submit block to the Stacks node: {e:?}");
-                    backoff::Error::transient(e)
-                })
+                    backoff::Error::transient(ClientError::from(e))
+                })?;
+            if !response.status().is_success() {
+                warn!(
+                    "Failed to post block to stacks-node, will retry until limit reached";
+                    "http_status" => %response.status(),
+                );
+                return Err(backoff::Error::transient(ClientError::RequestFailure(
+                    response.status(),
+                )));
+            }
+            Ok(response)
         };
         let response = retry_with_exponential_backoff(send_request)?;
         timer.stop_and_record();
-        if !response.status().is_success() {
-            return Err(ClientError::RequestFailure(response.status()));
-        }
         let post_block_resp = response.json::<StacksBlockAcceptedData>()?;
         Ok(post_block_resp.accepted)
     }
@@ -1118,7 +1098,7 @@ mod tests {
             header,
             txs: vec![],
         };
-        let h = spawn(move || mock.client.submit_block_for_validation(block));
+        let h = spawn(move || mock.client.submit_block_for_validation(block, None));
         write_response(mock.server, b"HTTP/1.1 200 OK\n\n");
         assert!(h.join().unwrap().is_ok());
     }
@@ -1131,7 +1111,7 @@ mod tests {
             header,
             txs: vec![],
         };
-        let h = spawn(move || mock.client.submit_block_for_validation(block));
+        let h = spawn(move || mock.client.submit_block_for_validation(block, None));
         write_response(mock.server, b"HTTP/1.1 404 Not Found\n\n");
         assert!(h.join().unwrap().is_err());
     }

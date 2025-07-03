@@ -15,7 +15,6 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
@@ -25,12 +24,13 @@ use libstackerdb::SlotMetadata;
 use stacks_common::address::{AddressHashMode, C32_ADDRESS_VERSION_TESTNET_SINGLESIG};
 use stacks_common::codec::StacksMessageCodec;
 use stacks_common::types::chainstate::{
-    BlockHeaderHash, BurnchainHeaderHash, ConsensusHash, SortitionId, StacksAddress, StacksBlockId,
+    BlockHeaderHash, BurnchainHeaderHash, ConsensusHash, StacksAddress, StacksBlockId,
     StacksPrivateKey, StacksPublicKey,
 };
 use stacks_common::util::get_epoch_time_secs;
 use stacks_common::util::hash::{to_hex, Hash160, Sha512Trunc256Sum};
 use stacks_common::util::pipe::Pipe;
+use stacks_common::util::serde_serializers::{prefix_hex, prefix_opt_hex};
 
 use crate::burnchains::bitcoin::indexer::BitcoinIndexer;
 use crate::burnchains::Txid;
@@ -44,7 +44,6 @@ use crate::chainstate::stacks::{
     TransactionAuth, TransactionPayload, TransactionPostConditionMode, TransactionVersion,
 };
 use crate::core::MemPoolDB;
-use crate::net::api::{prefix_hex, prefix_opt_hex};
 use crate::net::db::PeerDB;
 use crate::net::httpcore::{StacksHttpRequest, StacksHttpResponse};
 use crate::net::relay::Relayer;
@@ -53,8 +52,8 @@ use crate::net::test::{RPCHandlerArgsType, TestEventObserver, TestPeer, TestPeer
 use crate::net::tests::inv::nakamoto::make_nakamoto_peers_from_invs_ext;
 use crate::net::tests::NakamotoBootPlan;
 use crate::net::{
-    Attachment, AttachmentInstance, MemPoolEventDispatcher, RPCHandlerArgs, StackerDBConfig,
-    StacksNodeState, UrlString,
+    Attachment, AttachmentInstance, MemPoolEventDispatcher, StackerDBConfig, StacksNodeState,
+    UrlString,
 };
 
 mod callreadonly;
@@ -72,6 +71,7 @@ mod getcontractabi;
 mod getcontractsrc;
 mod getdatavar;
 mod getheaders;
+mod gethealth;
 mod getinfo;
 mod getistraitimplemented;
 mod getmapentry;
